@@ -261,23 +261,31 @@ function TextChat({
 
     files.forEach((file) => {
       if (isImage(file)) {
+        if (!supportsVision) {
+          showAlert({
+            title: "Vision Model Required",
+            message: "To attach images, please select and load a multimodal/vision model with an mmproj file.",
+            danger: true,
+          });
+          return;
+        }
         optimizeImageForVision(file)
           .then((image) => {
-          setAttachments((prev) => [
-            ...prev,
-            {
-              id: Math.random().toString(36).substring(7),
-              file,
-              type: "image",
-              name: file.name,
+            setAttachments((prev) => [
+              ...prev,
+              {
+                id: Math.random().toString(36).substring(7),
+                file,
+                type: "image",
+                name: file.name,
                 dataUrl: image.previewDataUrl,
                 sendDataUrl: image.sendDataUrl,
                 width: image.width,
                 height: image.height,
                 originalWidth: image.originalWidth,
                 originalHeight: image.originalHeight,
-            },
-          ]);
+              },
+            ]);
           })
           .catch((err) => {
             showAlert({ title: "Image Error", message: err.message || String(err), danger: true });
@@ -1214,8 +1222,8 @@ function TextChat({
                 <button
                   className="chat-composer-attach-btn"
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={!supportsVision || isBusy}
-                  title={supportsVision ? "Attach files or images" : visionStatus}
+                  disabled={!status.ready || isBusy}
+                  title={status.ready ? "Attach files (text/code) or images (vision models only)" : "Select and load a GGUF model to attach files"}
                 >
                   <Paperclip size={17} />
                 </button>

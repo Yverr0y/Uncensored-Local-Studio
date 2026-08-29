@@ -134,3 +134,42 @@ test("Windows setup repairs issue 44 illegal instructions and RTX 50 CUDA runtim
   assert.match(server, /0xC000001D: illegal CPU instruction/);
   assert.match(server, /runtime-dispatched Windows backend/);
 });
+
+test("Kokoro setup uses pinned online dependencies and skips optional CUDA payloads", () => {
+  for (const relativePath of ["scripts/setup/setup-tts.ps1", "scripts/setup/setup-tts.sh"]) {
+    const setup = read(relativePath);
+    assert.match(setup, /ONNXRUNTIME_NODE_INSTALL_CUDA/);
+    assert.match(setup, /prefer-online/);
+    assert.match(setup, /\bci\b/);
+    assert.doesNotMatch(setup, /prefer-offline/);
+  }
+});
+
+test("model imports retry locked files and explain large-drive failures", () => {
+  const server = read("scripts/server/serve.cjs");
+  assert.match(server, /function withFileRetrySync/);
+  assert.match(server, /function replaceFileWithRetry/);
+  assert.match(server, /fs\.openSync\(tempPath, "w"\)/);
+  assert.match(server, /FAT32 files are limited to 4 GB/);
+  assert.match(server, /ensureStorageCapacity\(targetDir/);
+});
+
+test("CoreML setup installs and validates PyTorch", () => {
+  const setup = read("scripts/setup/setup-coreml-npu.sh");
+  assert.match(setup, /pip install torch/);
+  assert.match(setup, /import torch/);
+});
+
+test("image generator exposes the wired negative prompt", () => {
+  const generator = read("app/frontend/src/components/Generator.jsx");
+  assert.match(generator, /Negative Prompt \(Optional\)/);
+  assert.match(generator, /value=\{negativePrompt\}/);
+  assert.match(generator, /setNegativePrompt\(e\.target\.value\)/);
+});
+
+test("text chat accepts document attachments without requiring a vision model", () => {
+  const chat = read("app/frontend/src/components/TextChat.jsx");
+  assert.match(chat, /disabled=\{!status\.ready \|\| isBusy\}/);
+  assert.match(chat, /type: "document"/);
+  assert.match(chat, /if \(!supportsVision\)[\s\S]*?Vision Model Required/);
+});

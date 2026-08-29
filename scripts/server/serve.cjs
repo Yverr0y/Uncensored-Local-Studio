@@ -1606,6 +1606,65 @@ function formatBytes(bytes) {
   return `${(value / (1024 ** idx)).toFixed(idx === 0 ? 0 : 1)} ${units[idx]}`;
 }
 
+const RETRYABLE_FILE_CODES = new Set(["EACCES", "EBUSY", "EMFILE", "ENFILE", "EPERM"]);
+
+function sleepSync(milliseconds) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+function withFileRetrySync(operation, attempts = 8) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return operation();
+    } catch (err) {
+      lastError = err;
+      if (!RETRYABLE_FILE_CODES.has(err?.code) || attempt === attempts - 1) throw err;
+      sleepSync(Math.min(1000, 100 * (2 ** attempt)));
+    }
+  }
+  throw lastError;
+}
+
+function describeStorageError(err, targetPath) {
+  const target = path.basename(targetPath || "the destination file");
+  if (err?.code === "ENOSPC" || err?.code === "EFBIG") {
+    const detail = err?.message ? ` ${err.message}` : "";
+    return `Cannot write ${target}: the destination has insufficient usable space or its filesystem cannot store a file this large.${detail} Large models require an NTFS, exFAT, APFS, or ext4 drive; FAT32 files are limited to 4 GB.`;
+  }
+  if (RETRYABLE_FILE_CODES.has(err?.code)) {
+    return `Cannot access ${target} after several retries. Close programs scanning or using the file, allow this app through antivirus/ransomware protection, and retry.`;
+  }
+  return err?.message || String(err);
+}
+
+function ensureStorageCapacity(targetDir, requiredBytes) {
+  const bytes = Number(requiredBytes) || 0;
+  if (bytes <= 0 || typeof fs.statfsSync !== "function") return;
+  try {
+    const stats = fs.statfsSync(targetDir);
+    const availableBytes = Number(stats.bavail) * Number(stats.bsize);
+    if (Number.isFinite(availableBytes) && availableBytes > 0 && bytes > availableBytes) {
+      const err = new Error(`Only ${formatBytes(availableBytes)} is available, but ${formatBytes(bytes)} is required.`);
+      err.code = "ENOSPC";
+      throw err;
+    }
+  } catch (err) {
+    if (err?.code === "ENOSPC") throw err;
+  }
+}
+
+function replaceFileWithRetry(tempPath, destPath) {
+  withFileRetrySync(() => {
+    try {
+      fs.unlinkSync(destPath);
+    } catch (err) {
+      if (err?.code !== "ENOENT") throw err;
+    }
+    fs.renameSync(tempPath, destPath);
+  });
+}
+
 function getPathInfo(label, targetPath, type = "file") {
   const exists = fs.existsSync(targetPath);
   return {
@@ -3097,7 +3156,7 @@ function getCoreMLPythonPath() {
   try {
     const probeResult = spawnSync("python3", [
       "-c",
-      "import python_coreml_stable_diffusion, diffusers, transformers"
+      "import torch, python_coreml_stable_diffusion, diffusers, transformers"
     ], { timeout: 2000 });
     
     if (probeResult.status === 0) {
@@ -5010,8 +5069,7 @@ function startImageBackendDownload(backendId, redirectCount = 0, redirectUrl = "
       }
       fileStream.end(() => {
         try {
-          try { fs.unlinkSync(destPath); } catch (_) {}
-          fs.renameSync(tempPath, destPath);
+          replaceFileWithRetry(tempPath, destPath);
           downloadState.speed = "Installing";
           downloadState.progress = 95;
           installImageBackendArchive(destPath, backend);
@@ -5245,8 +5303,7 @@ function startModelDownload(url, overrideFilename = null, targetDir = MODELS, ki
               return;
             }
           }
-          try { fs.unlinkSync(destPath); } catch (_) {}
-          fs.renameSync(tempPath, destPath);
+          replaceFileWithRetry(tempPath, destPath);
 
           if (destPath.toLowerCase().endsWith(".zip")) {
             try {
@@ -5755,7 +5812,21 @@ function streamModelUpload(req, filename, targetDir = MODELS, mode = "image") {
 
     const destPath = path.join(targetDir, safeFilename);
     const tempPath = `${destPath}.part`;
-    const out = fs.createWriteStream(tempPath);
+    try {
+      ensureStorageCapacity(targetDir, req.headers?.["content-length"]);
+    } catch (err) {
+      reject(new Error(describeStorageError(err, destPath)));
+      return;
+    }
+
+    let fileDescriptor;
+    try {
+      fileDescriptor = withFileRetrySync(() => fs.openSync(tempPath, "w"));
+    } catch (err) {
+      reject(new Error(describeStorageError(err, tempPath)));
+      return;
+    }
+    const out = fs.createWriteStream(tempPath, { fd: fileDescriptor, autoClose: true });
     let finished = false;
 
     const cleanupPartial = () => {
@@ -5780,12 +5851,12 @@ function streamModelUpload(req, filename, targetDir = MODELS, mode = "image") {
     });
     out.on("error", err => {
       cleanupPartial();
-      reject(err);
+      reject(new Error(describeStorageError(err, tempPath)));
     });
     out.on("finish", () => {
       try {
         finished = true;
-        fs.renameSync(tempPath, destPath);
+        replaceFileWithRetry(tempPath, destPath);
         console.log(`  [api] Imported model file: ${safeFilename}`);
         if (mode === "text" || mode === "speech") {
           const stats = fs.statSync(destPath);
@@ -5795,7 +5866,7 @@ function streamModelUpload(req, filename, targetDir = MODELS, mode = "image") {
         }
       } catch (err) {
         try { fs.unlinkSync(tempPath); } catch (_) {}
-        reject(err);
+        reject(new Error(describeStorageError(err, destPath)));
       }
     });
   });
