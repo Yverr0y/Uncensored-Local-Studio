@@ -106,3 +106,31 @@ test("Windows launcher remains ASCII-safe for cmd.exe", () => {
   const launcher = fs.readFileSync(path.join(root, "windows.bat"));
   assert.equal([...launcher].some((byte) => byte > 0x7f), false);
 });
+
+test("Windows Vulkan setup repairs issue 10 runtime and RX 580 backend failures", () => {
+  const setup = read("scripts/setup/setup.ps1");
+  const server = read("scripts/server/serve.cjs");
+
+  assert.match(setup, /https:\/\/aka\.ms\/vc14\/vc_redist\.x64\.exe/);
+  assert.match(setup, /VCOMP140\.dll/);
+  assert.match(setup, /master-685-19bdfe2\/sd-master-19bdfe2-bin-win-vulkan-x64\.zip/);
+  assert.match(setup, /\.backend-version/);
+
+  assert.match(server, /backendName === "vulkan"[\s\S]*?getPreferredVulkanBackendName\(\)/);
+  assert.match(server, /0xC0000135/);
+  assert.match(server, /Microsoft Visual C\+\+ runtime/);
+});
+
+test("Windows setup repairs issue 44 illegal instructions and RTX 50 CUDA runtime", () => {
+  const setup = read("scripts/setup/setup.ps1");
+  const server = read("scripts/server/serve.cjs");
+
+  assert.match(setup, /master-782-b290693\/sd-master-b290693-bin-win-cuda12-x64\.zip/);
+  assert.match(setup, /master-782-b290693\/cudart-sd-bin-win-cu12-x64\.zip/);
+  assert.match(setup, /master-782-b290693\/sd-master-b290693-bin-win-cpu-x64\.zip/);
+  assert.doesNotMatch(setup, /cudart-llama-bin-win-cuda-12\.4-x64/);
+
+  assert.match(server, /3221225501/);
+  assert.match(server, /0xC000001D: illegal CPU instruction/);
+  assert.match(server, /runtime-dispatched Windows backend/);
+});

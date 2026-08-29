@@ -55,6 +55,7 @@ const BACKEND_PATHS = {
 };
 let BACKEND_PATH = "";
 const backendSupportsFlags = {};
+const backendValidationErrors = {};
 if (osPlatform === "win32") {
   let hasNvidia = false;
   try {
@@ -3026,6 +3027,10 @@ function getVulkanUnavailableReason() {
   if (osPlatform === "win32" && !hasVulkanRuntime()) {
     return "The Vulkan runtime (vulkan-1.dll) is missing. Install or update your GPU vendor driver with Vulkan support, then run setup again so the Vulkan backend folder is repaired.";
   }
+  const vulkanPath = osPlatform === "win32" ? BACKEND_PATHS.vulkan : BACKEND_PATHS.linuxVulkan;
+  if (backendValidationErrors[vulkanPath]) {
+    return backendValidationErrors[vulkanPath];
+  }
   if (osPlatform === "linux" && isRunningInWSL()) {
     const gpuName = getGpuInfo().name;
     const lowerGpu = gpuName.toLowerCase();
@@ -3175,7 +3180,8 @@ function getBackendOptions() {
     unavailable.push({ id: "vulkan", label: "Vulkan GPU", reason: getVulkanUnavailableReason() });
   }
   if (cudaInstalled && !cudaAvailable) {
-    unavailable.push({ id: "cuda", label: "CUDA GPU", reason: "Installed, but CUDA backend validation failed." });
+    const cudaPath = osPlatform === "win32" ? BACKEND_PATHS.cuda : BACKEND_PATHS.linuxCuda;
+    unavailable.push({ id: "cuda", label: "CUDA GPU", reason: backendValidationErrors[cudaPath] || "Installed, but CUDA backend validation failed." });
   }
   if (rocmInstalled && !rocmAvailable) {
     unavailable.push({ id: "rocm", label: "ROCm GPU (AMD)", reason: "Installed, but ROCm backend validation failed." });
@@ -3239,7 +3245,14 @@ function getBackendOptions() {
 function backendAccepts(binaryPath, backendName) {
   if (!binaryPath || !fs.existsSync(binaryPath)) return false;
   try {
-    const cliBackendName = backendName;
+    delete backendValidationErrors[binaryPath];
+    const cliBackendName = backendName === "cuda"
+      ? "cuda0"
+      : backendName === "vulkan"
+        ? getPreferredVulkanBackendName()
+        : backendName === "rocm"
+          ? "rocm0"
+          : backendName;
     let probeArgs = [
       "--backend", cliBackendName,
       "--params-backend", cliBackendName,
@@ -3264,6 +3277,15 @@ function backendAccepts(binaryPath, backendName) {
     }
     let result = spawnSync(binaryPath, probeArgs, { env: spawnEnv, encoding: "utf8", timeout: 5000 });
     let output = `${result.stdout || ""}\n${result.stderr || ""}`;
+    const unsignedExitCode = Number(result.status) >>> 0;
+    if (osPlatform === "win32" && unsignedExitCode === 0xC0000135) {
+      backendValidationErrors[binaryPath] = "Windows could not start this backend because a required DLL is missing (0xC0000135). Run scripts/setup/setup.ps1 to install the Microsoft Visual C++ runtime and repair the backend.";
+      return false;
+    }
+    if (osPlatform === "win32" && unsignedExitCode === 0xC000001D) {
+      backendValidationErrors[binaryPath] = "This Windows backend used a CPU instruction that this processor does not support (0xC000001D). Run scripts/setup/setup.ps1 to replace it with the runtime-dispatched backend build.";
+      return false;
+    }
 
     let supportsFlags = true;
     // Some binaries do not support --backend. If we see "unknown argument",
@@ -4802,7 +4824,7 @@ const IMAGE_BACKEND_DOWNLOADS = {
   "cpu": {
     id: "cpu",
     label: "CPU",
-    url: "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-721-8caa3f9/sd-master-8caa3f9-bin-win-avx2-x64.zip",
+    url: "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-782-b290693/sd-master-b290693-bin-win-cpu-x64.zip",
     destDir: path.join(ROOT, "app", "backend", "win", "cpu"),
     exeName: "sd-cpu.exe",
     requiredDll: "stable-diffusion.dll",
@@ -4810,7 +4832,7 @@ const IMAGE_BACKEND_DOWNLOADS = {
   "vulkan": {
     id: "vulkan",
     label: "Vulkan GPU",
-    url: "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-669-2d40a8b/sd-master-2d40a8b-bin-win-vulkan-x64.zip",
+    url: "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-685-19bdfe2/sd-master-19bdfe2-bin-win-vulkan-x64.zip",
     destDir: path.join(ROOT, "app", "backend", "win", "vulkan"),
     exeName: "sd-vulkan.exe",
     requiredDll: "stable-diffusion.dll",
@@ -4818,7 +4840,7 @@ const IMAGE_BACKEND_DOWNLOADS = {
   "cuda": {
     id: "cuda",
     label: "CUDA GPU",
-    url: "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-721-8caa3f9/sd-master-8caa3f9-bin-win-cuda12-x64.zip",
+    url: "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-782-b290693/sd-master-b290693-bin-win-cuda12-x64.zip",
     destDir: path.join(ROOT, "app", "backend", "win", "cuda"),
     exeName: "sd-cuda.exe",
     requiredDll: "stable-diffusion.dll",
@@ -5430,23 +5452,27 @@ function describeLinuxRuntimeLinkerError(rawError) {
 
 function describeBackendExitCode(code, backendPath) {
   const numericCode = Number(code);
+  if (osPlatform === "win32" && numericCode === 3221225501) {
+    const backendName = path.basename(backendPath || BACKEND_PATH || "backend");
+    return `exited with code ${code} (0xC000001D: illegal CPU instruction).\n\nThe model is not the cause. Windows stopped ${backendName} because the backend used a CPU instruction that this processor does not support. Run scripts/setup/setup.ps1 to replace the old machine-specific build with the runtime-dispatched Windows backend and matching CUDA 12.8 runtime. RTX 50-series users should then retry CUDA mode; CPU mode remains available as a fallback.`;
+  }
   if (osPlatform === "win32" && numericCode === 3221225781) {
     const backendName = path.basename(backendPath || BACKEND_PATH || "backend");
     const lowerBackend = backendName.toLowerCase();
     const isVulkan = lowerBackend.includes("vulkan");
     const isCuda = lowerBackend.includes("cuda");
     const likelyMissing = isVulkan
-      ? "the Vulkan runtime/driver DLL, such as vulkan-1.dll"
+      ? "a Microsoft Visual C++ runtime DLL (such as VCOMP140.dll) or the Vulkan driver DLL (vulkan-1.dll)"
       : isCuda
         ? "a CUDA runtime DLL or NVIDIA driver component"
         : "a required backend DLL";
     const driverHint = isVulkan
-      ? "Install or update the GPU vendor driver with Vulkan support, then run setup again so the Vulkan backend folder is repaired."
+      ? "Run scripts/setup/setup.ps1 to install the Microsoft runtime and repair the Vulkan backend, then update the GPU driver if vulkan-1.dll is still unavailable."
       : isCuda
         ? "Install or update the NVIDIA driver, then run setup again so the CUDA backend folder is repaired."
         : "Update the GPU driver, then run setup again so the backend folder is repaired.";
 
-    return `exited with code ${code} (0xC0000135: required DLL not found).\n\nWindows could not start ${backendName} because ${likelyMissing} is missing or not loadable. ${driverHint}\n\nIf you are using an AMD/Intel GPU, update the AMD/Intel graphics driver first. If the GPU is too old for the current Vulkan backend, switch the backend to CPU.`;
+    return `exited with code ${code} (0xC0000135: required DLL not found).\n\nWindows could not start ${backendName} because ${likelyMissing} is missing or not loadable. ${driverHint}\n\nCPU mode remains available if Vulkan still cannot start.`;
   }
 
   return `exited with code ${code}`;
