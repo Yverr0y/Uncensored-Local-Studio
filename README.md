@@ -11,12 +11,12 @@
 </p>
 
 <p align="center">
-  🎥 <strong>Watch the Setup & Demo Video:</strong> <a href="https://youtu.be/qvamkqmLPn8">https://youtu.be/qvamkqmLPn8</a>
+  🎥 <strong>Watch the Setup & Demo Video:</strong> <a href="https://youtu.be/yeFvP3SWMak">https://youtu.be/yeFvP3SWMak</a>
 </p>
 
 <p align="center">
-  <a href="https://youtu.be/qvamkqmLPn8">
-    <img src="https://img.youtube.com/vi/qvamkqmLPn8/maxresdefault.jpg" alt="Uncensored AI Studio Video Tutorial" width="800" style="border-radius: 8px;" />
+  <a href="https://youtu.be/yeFvP3SWMak">
+    <img src="https://img.youtube.com/vi/yeFvP3SWMak/maxresdefault.jpg" alt="Uncensored AI Studio Video Tutorial" width="800" style="border-radius: 8px;" />
   </a>
 </p>
 
